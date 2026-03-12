@@ -1,3 +1,10 @@
+# weighted_decay 1e-5 to 1e-2
+# batch_size = [16, 32, 64, 128]
+# learning_rate 1e-4 to 1e-2
+# optimizers = [Adam, AdamW, SGD]
+# dropout 0 to 0.75
+# epochs 1 to 20
+
 import pandas as pd
 import numpy as np
 import cupy as cp
@@ -6,19 +13,31 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 import torch
 import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
-import time
+from torch.func import vmap
 
 xp = cp
 
+weighted_decays = np.linspace(1e-5, 1e-2, 20)
+batch_sizes = [16, 32, 64, 128]
+learning_rates = np.linspace(1e-4, 1e-2, 20)
+optimizers = ["Adam", "AdamW", "SGD"]
+initialization_methods = ["xavier_uniform", "xavier_normal", "uniform", "normal", "constant"]
+drop_rates = np.arange(15)*0.05
+epochs = np.arange(1, 20)
+
 class SpamDetector(nn.Module):
-    def __init__(self, input_size):
+    def __init__(self, input_size, drop_rate):
         super(SpamDetector, self).__init__()
-        self.dropout = nn.Dropout(0)
-        self.linear = nn.Linear(input_size, 1)
+        self.dropouts = nn.ModuleList(
+            [nn.Dropout(drop_rate) for drop_rate in drop_rates]
+        )
+        self.linear = nn.ModuleList(
+            [nn.Linear(input_size, 1) for _ in drop_rates]
+        )
 
     def forward(self, x):
-        x = self.dropout(x)
-        x = self.linear(x)
+        x = [dropout(x) for dropout in self.dropouts]
+        x = [linear(x[i]) for i, linear in enumerate(self.linear)]
         return x
 
 
@@ -36,7 +55,7 @@ print("Spam Data: ", np.sum(condition))
 print("Nonspam Data: ", np.sum(~condition), "\n")
 
 data = data.to_numpy()
-data = np.asarray(data)
+data = xp.asarray(data)
 
 num_training_rows = round(rows * 0.9)
 training_data = data[:num_training_rows, :]
@@ -55,16 +74,14 @@ y_tensor = torch.tensor((y_train=="spam"), dtype=torch.float32)
 
 device = torch.device("cuda")
 dataset = TensorDataset(X_tensor, y_tensor)
-loader = DataLoader(dataset, batch_size=64, shuffle=True)
+loaders = [DataLoader(dataset, batch_size=batch, shuffle=True) for batch in batch_sizes]
 model = SpamDetector(input_size=X_tensor.shape[1])
 criterion = nn.BCEWithLogitsLoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
-
 model = model.to(device)
 criterion = criterion.to(device)
 model.train()
-start = time.time()
 for epoch in range(3):
     for X_batch, y_batch in loader:
         X_batch = X_batch.to(device)
@@ -77,9 +94,9 @@ for epoch in range(3):
 
     print("Epoch: ", epoch)
     print("Loss: ", loss.item(), "\n")
-end = time.time()
-print("Elapsed Time: ", end - start)
+
 X = vectorizer.transform(x_eval)
+X, y_eval = smote.fit_resample(X, y_eval)
 X_tensor = torch.tensor(X.toarray(), dtype=torch.float32)
 y_tensor = torch.tensor((y_eval=="spam"), dtype=torch.float32)
 dataset = TensorDataset(X_tensor, y_tensor)
