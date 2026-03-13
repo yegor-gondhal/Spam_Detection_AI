@@ -13,11 +13,9 @@ xp = cp
 class SpamDetector(nn.Module):
     def __init__(self, input_size):
         super(SpamDetector, self).__init__()
-        self.dropout = nn.Dropout(0)
         self.linear = nn.Linear(input_size, 1)
 
     def forward(self, x):
-        x = self.dropout(x)
         x = self.linear(x)
         return x
 
