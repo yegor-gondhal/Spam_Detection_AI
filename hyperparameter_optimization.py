@@ -16,6 +16,7 @@ from torch.utils.data import TensorDataset, DataLoader
 from torch.func import vmap
 import time
 import math
+import copy
 
 xp = cp
 
@@ -62,18 +63,18 @@ y_tensor = torch.tensor((y_eval=="spam"), dtype=torch.float32)
 dataset = TensorDataset(X_tensor, y_tensor)
 eval_loader = DataLoader(dataset, batch_size=X_tensor.shape[1])
 
-weighted_decays = xp.linspace(1e-5, 1e-2, 20)
-learning_rates = xp.linspace(1e-4, 1e-2, 20)
+weighted_decays = xp.linspace(1e-5, 1e-2, 2) #20
+learning_rates = xp.linspace(1e-4, 1e-2, 2) #20
 optimizers = np.asarray(["Adam", "AdamW", "SGD"])
-drop_rates = xp.arange(15)*0.05
+drop_rates = xp.arange(2)*0.05 # 15
 
 class SpamDetector(nn.Module):
     def __init__(self, dropouts, input_size):
         super(SpamDetector, self).__init__()
         self.M = len(dropouts)
-        self.weights = nn.ParameterList([torch.empty(input_size) for _ in range(self.M)])
+        self.weights = nn.ParameterList([torch.empty(input_size, 1) for _ in range(self.M)])
         self.biases = nn.ParameterList([torch.empty(1) for _ in range(self.M)])
-        self.register_buffer("dropout_probs", torch.Tensor(dropouts))
+        self.register_buffer("dropouts", torch.Tensor(dropouts))
         for w in self.weights:
             nn.init.uniform_(w, a=-math.sqrt(5), b=math.sqrt(5))
         bound = 1/math.sqrt(input_size)
@@ -87,57 +88,81 @@ class SpamDetector(nn.Module):
             keep_prob = (1.0 - self.dropouts).to(x.device).view(self.M, 1, 1)
             rand = torch.rand((self.M, B, F), device=x.device)
             mask = rand < keep_prob
-            mask /= keep_prob
-            x_batched = x_batched * mask
-        weights = torch.stack([w for w in self.weights], dim=0).view(self.M, F, 1)
-        biases = torch.stack([b for b in self.biases], dim=0).view(self.M, 1, 1)
+            x_batched = x_batched * mask / keep_prob
+        weights = torch.stack([w for w in self.weights], dim=0).view(self.M, F, 1).to(x.device)
+        biases = torch.stack([b for b in self.biases], dim=0).view(self.M, 1, 1).to(x.device)
         out = torch.matmul(x_batched, weights) + biases
         out = out.squeeze()
+        print(self.M)
+        print(B)
+        print(F)
+        print(out.shape)
         return out
 
 
 # shape = (batch_sizes, epochs, optimizers, weighted_decays, learning_rates, drop_rates)
-_, WGT, LR, DR = xp.meshgrid(xp.array([0, 1, 2]), weighted_decays, learning_rates, drop_rates)
+WGT, LR, DR = xp.meshgrid(weighted_decays, learning_rates, drop_rates)
 DR_flat = xp.ravel(DR)
 model = SpamDetector(DR_flat, X_tensor.shape[1])
-params = model.parameters()
+param_groups = []
+print("params")
+for i, (wd_i, lr_i, dr_i) in enumerate(zip(xp.ravel(WGT), xp.ravel(LR), xp.ravel(DR))):
+    param_groups.append({
+        "params": [model.weights[i], model.biases[i]],
+        "lr": float(lr_i),
+        "weight_decay": float(wd_i)
+    })
 
-params = params.reshape(DR.shape)
-adam_optimizer = [[[torch.optim.Adam(params=params[0, k, j, i], weight_decay=wd, lr=lr) for _, i in enumerate(drop_rates)] for lr, j in enumerate(learning_rates)] for wd, k in enumerate(weighted_decays)]
-adamw_optimizer = [[[torch.optim.AdamW(params=params[1, k, j, i], weight_decay=wd, lr=lr) for _, i in enumerate(drop_rates)] for lr, j in enumerate(learning_rates)] for wd, k in enumerate(weighted_decays)]
-sgd_optimizer = [[[torch.optim.SGD(params=params[2, k, j, i], weight_decay=wd, lr=lr) for _, i in enumerate(drop_rates)] for lr, j in enumerate(learning_rates)] for wd, k in enumerate(weighted_decays)]
-adam_optimizer = xp.asarray(adam_optimizer)
-adamw_optimizer = xp.asarray(adamw_optimizer)
-sgd_optimizer = xp.asarray(sgd_optimizer)
-optimizers = xp.stack([adam_optimizer, adamw_optimizer, sgd_optimizer], axis=0)
+adam_optimizer = torch.optim.Adam(param_groups)
+adamw_optimizer = torch.optim.AdamW(param_groups)
+sgd_optimizer = torch.optim.SGD(param_groups)
+
+info = []
 print("beginning")
+t1 = time.time()
 for loader in loaders:
-    model1 = model.copy().to(device)
-    optim = optimizers.copy().to(device)
-    for epoch in range(20):
-        model1.train()
-        for X_batch, y_batch in loader:
-            X_batch = X_batch.to(device)
-            y_batch = y_batch.to(device)
-            y_pred = model(X_batch).squeeze()
-            loss = criterion(y_pred, y_batch)
-            optim.zero_grad()
-            loss.backward()
-            optim.step()
+    load_info = []
+    print("Loader")
+    for optimizer in [adam_optimizer, adamw_optimizer, sgd_optimizer]:
+        optim_info = []
+        print("Optimizer")
+        model1 = copy.deepcopy(model)
+        optim = copy.deepcopy(optimizer)
+        for epoch in range(20):
+            epoch_info = []
+            model1.train()
+            for X_batch, y_batch in loader:
+                X_batch = X_batch.to(device)
+                y_batch = y_batch.to(device)
+                y_pred = model(X_batch).squeeze()
+                y_batch = xp.repeat(y_batch[None, :], y_pred.shape[0], axis=1)
+                loss = criterion(y_pred, y_batch)
+                optim.zero_grad()
+                loss.backward()
+                optim.step()
 
-        model1.eval()
-        for X_batch, y_batch in eval_loader:
-            X_batch = X_batch.to(device)
-            y_batch = y_batch.to(device)
-            y_pred = model(X_batch).squeeze()
-            y_batch = y_batch.detach().cpu()
-            y_batch = xp.asarray(y_batch)
-            y_pred = y_pred.detach().cpu()
-            y_pred = xp.asarray(y_pred)
-            y_pred = (y_pred > 0.0)
-            condition = y_pred == y_batch
+            model1.eval()
+            for X_batch, y_batch in eval_loader:
+                X_batch = X_batch.to(device)
+                y_batch = y_batch.to(device)
+                y_pred = model(X_batch).squeeze()
+                y_batch = y_batch.detach().cpu()
+                y_batch = xp.asarray(y_batch)
+                y_pred = y_pred.detach().cpu()
+                y_pred = xp.asarray(y_pred)
+                y_pred = (y_pred > 0.0)
+                condition = y_pred == y_batch
+                epoch_info.append(xp.sum(condition)/xp.size(condition))
 
+            optim_info.append(epoch_info)
+        load_info.append(optim_info)
+    info.append(load_info)
 
+t2 = time.time()
+print("Time: ", t2-t1)
+data = xp.asarray(info)
+data = data.get()
+np.save("hyperparameter_data.npy", data)
 
 '''
 for weighted_decay in weighted_decays:
