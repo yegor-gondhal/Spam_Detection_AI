@@ -7,20 +7,13 @@ import numpy as np
 class SpamDetector(nn.Module):
     def __init__(self, input_size):
         super(SpamDetector, self).__init__()
-        self.linear = nn.Linear(input_size, 1)
+        self.linear = nn.Linear(input_size, 128)
+        self.linear1 = nn.Linear(128, 1)
 
     def forward(self, x):
         x = self.linear(x) # Put input through linear layer
-        #x = self.sigmoid(x) # Apply sigmoid function
+        x = self.linear1(x)
         return x
-
-def bayes_prior_correction(pred):
-    training_rate = 0.5
-    real_rate = 747/5572
-    x = (1-training_rate)*(1-pred)/(1-real_rate)
-    x += training_rate*pred/real_rate
-    p = training_rate*pred/real_rate
-    return p/x
 
 def engineered_features(message):
     has_phone = int(bool(re.search(r"\d{3}[- ]?\d{3}[- ]?\d{4}", message)))
