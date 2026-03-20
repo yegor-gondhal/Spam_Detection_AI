@@ -4,8 +4,8 @@ from spam_model_arch import engineered_features
 
 # Create some messages to switch between
 
-message = "W1N 25 DOLLAR$ NOW!!! Txt 801-578-8375 fr more info."
-#message = "OMGGG!! I JUST GOT HIS NUMBER, ITS 801-578-8375"
+#message = "W1N 25 DOLLAR$ NOW!!! Txt 801-578-8375 fr more info."
+message = "OMGGG!! I JUST GOT HIS NUMBER, ITS 801-578-8375"
 #message = "Hey Susan!, You have 5 valid credits available! Click here to use them now!"
 
 # Specify device as the cpu

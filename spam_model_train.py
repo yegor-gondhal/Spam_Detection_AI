@@ -107,12 +107,7 @@ for i, (model, optimizer, loader) in enumerate(zip(models, optimizers, loaders))
     model = model.to(device) # Send model to device
     model.train() # Allow weights and biases to be adjusted
 
-    if i == 3: # Model that trains on engineered features takes more time to learn the correlations
-        epoch_num = 20
-    else:
-        epoch_num = 10
-
-    for epoch in range(epoch_num):
+    for epoch in range(20):
         for X_batch, y_batch in loader: # Iterate through every batch in the loader
             # Send to device
             X_batch = X_batch.to(device)
